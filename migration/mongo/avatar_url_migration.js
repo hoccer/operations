@@ -3,6 +3,7 @@
 //
 // usage: mongo talk avatar_url_migration.js
 
+// https://www.debuggex.com/r/RCraNQW09qAzEQwE
 var regex = /^((https|http):\/\/.*?hoccer\.(de|com))(\/.*)$/;
 var port_str = ":8444";
 
