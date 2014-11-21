@@ -24,6 +24,13 @@ echo "backup volume name: $BACKUPVOL_NAME"
 BACKUPIMAGE_NAME="${NOW}_${VM_NAME}-backupimage"
 echo "backup image name: $BACKUPIMAGE_NAME"
 
+COPY_TO_REMOTE='1'
+IMPORT_ON_REMOTE='1'
+REMOTE_SERVER='10.77.77.10'
+REMOTE_TENANT_NAME='testing'
+LOCAL_DIR='/srv/vm_backups'
+
+
 
 # create snapshot of VM volume
 echo
@@ -80,11 +87,87 @@ while [ "$STATE" != "active" ]; do
   STATE=`glance image-list | grep $BACKUPIMAGE_NAME | awk '{print $12}'`
 done
 
+# create local backup directory
+mkdir -p $LOCAL_DIR
+
 # download backup image
 echo
-echo glance image-download --file /root/${BACKUPIMAGE_NAME}.img $BACKUPIMAGE_NAME
-glance image-download --file /root/${BACKUPIMAGE_NAME}.img $BACKUPIMAGE_NAME
+echo glance image-download --file ${LOCAL_DIR}/${BACKUPIMAGE_NAME}.img $BACKUPIMAGE_NAME
+glance image-download --file ${LOCAL_DIR}/${BACKUPIMAGE_NAME}.img $BACKUPIMAGE_NAME
 
 if [ "$?" -ne "0" ]; then
   exit 1
 fi
+
+if [ "$COPY_TO_REMOTE" == "1" ]; then
+  # copy backup image to remote server
+  echo
+  echo scp -c arcfour ${LOCAL_DIR}/${BACKUPIMAGE_NAME}.img ${REMOTE_SERVER}:/tmp/
+  scp -c arcfour ${LOCAL_DIR}/${BACKUPIMAGE_NAME}.img ${REMOTE_SERVER}:/tmp/
+fi
+
+if [ "$?" -ne "0" ]; then
+  exit 1
+fi
+
+if [ "$IMPORT_ON_REMOTE" == "1" ]; then
+  # import backup image on remote server and delete backup file afterwards
+  echo
+  echo "ssh ${REMOTE_SERVER} \"source /root/openrc && export OS_TENANT_NAME=$REMOTE_TENANT_NAME && glance image-create \
+    --name ${BACKUPIMAGE_NAME}.img --container-format bare \
+    --disk-format qcow2 --min-disk $VM_SIZE --min-ram 256 \
+    --file /tmp/${BACKUPIMAGE_NAME}.img && rm /tmp/${BACKUPIMAGE_NAME}.img\""
+  ssh ${REMOTE_SERVER} "source /root/openrc && export OS_TENANT_NAME=$REMOTE_TENANT_NAME && glance image-create \
+    --name ${BACKUPIMAGE_NAME}.img --container-format bare \
+    --disk-format qcow2 --min-disk $VM_SIZE --min-ram 256 \
+    --file /tmp/${BACKUPIMAGE_NAME}.img && rm /tmp/${BACKUPIMAGE_NAME}.img"
+
+  # keep only 3 remote backup images
+  NUM_IMAGES=`ssh ${REMOTE_SERVER} "source /root/openrc && export OS_TENANT_NAME=$REMOTE_TENANT_NAME \
+    && glance image-list | grep _${VM_NAME}-backupimage" | awk '{print $4}' | wc -l`
+  if [ "$NUM_IMAGES" -gt "3" ]; then
+    echo
+    echo "There are $NUM_IMAGES remote backup images. Will only keep the 3 most recent ones."
+    echo "ssh ${REMOTE_SERVER} \"source /root/openrc && export OS_TENANT_NAME=$REMOTE_TENANT_NAME \
+      && glance image-list | grep _${VM_NAME}-backupimage | awk '{print \\$4}' | head -n $(($NUM_IMAGES - 3)) | \
+      xargs -L 1 glance image-delete\""
+    ssh ${REMOTE_SERVER} "source /root/openrc && export OS_TENANT_NAME=$REMOTE_TENANT_NAME \
+      && glance image-list | grep _${VM_NAME}-backupimage | awk '{print \$4}' | head -n $(($NUM_IMAGES - 3)) | \
+      xargs -L 1 glance image-delete"
+  fi
+
+  # delete local backup file
+  echo
+  echo rm ${LOCAL_DIR}/${BACKUPIMAGE_NAME}.img
+  rm ${LOCAL_DIR}/${BACKUPIMAGE_NAME}.img
+fi
+
+
+# delete local snapshot
+echo
+echo cinder snapshot-delete $SNAPSHOT_ID
+cinder snapshot-delete $SNAPSHOT_ID
+
+if [ "$?" -ne "0" ]; then
+  exit 1
+fi
+
+# delete local backup volume
+echo
+echo cinder delete $BACKUPVOL_NAME
+cinder delete $BACKUPVOL_NAME
+
+if [ "$?" -ne "0" ]; then
+  exit 1
+fi
+
+# keep only 3 local backup images
+NUM_IMAGES=`glance image-list | grep _${VM_NAME}-backupimage | awk '{print $4}' | wc -l`
+if [ "$NUM_IMAGES" -gt "3" ]; then
+  echo
+  echo "There are $NUM_IMAGES local backup images. Will only keep the 3 most recent ones."
+  echo "glance image-list | grep _${VM_NAME}-backupimage | awk '{print \$4}' | head -n $(($NUM_IMAGES - 3)) | xargs -L 1 glance image-delete"
+  glance image-list | grep _${VM_NAME}-backupimage | awk '{print $4}' | head -n $(($NUM_IMAGES - 3)) | xargs -L 1 glance image-delete
+fi
+
+
